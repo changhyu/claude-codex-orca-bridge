@@ -1,5 +1,59 @@
 # claude-codex-orca-bridge
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](https://www.python.org/)
+[![Dependencies: Zero](https://img.shields.io/badge/Dependencies-Zero%20Stdlib-brightgreen.svg)](#english-overview)
+[![Protocol: MCP](https://img.shields.io/badge/Protocol-MCP%202025--11--25-orange.svg)](#english-overview)
+
+**[English](#english-overview) · [한국어 가이드](#한국어-가이드)**
+
+---
+
+## English Overview
+
+**Zero-dependency, HMAC-signed async bridge between cloud coding sessions (Claude Code Cloud, Codex Cloud) and local multi-agent workspaces (Orca IDE terminals, local CLI agents).**
+
+Cloud AI coding sessions and local multi-agent terminals operate in separate sandboxes. Moving tasks, review results, or build artifacts between them usually means manual copy-pasting across browser tabs or running brittle polling loops.
+
+`claude-codex-orca-bridge` connects them over **Model Context Protocol (MCP)** and **one-time expiring HTTPS callbacks** using only the Python 3.10+ standard library:
+
+- **Zero External Runtime Dependencies**: Pure Python standard library core so you can audit every line before connecting cloud and local environments. *(Optional: `cryptography` is only used if you enable Ed25519 Cloud Inbox verification.)*
+- **Per-Client HMAC-SHA256 Signed Queue**: Every queued request and result is signed with a dedicated 256-bit client key (`0600` file mode enforced) and verified fail-closed.
+- **Dedicated Callback HTTPS Origin (`127.0.0.1:8766`)**:
+  - Receives plain-text replies via single-use expiring tokens (stored only as SHA-256 hashes in SQLite).
+  - Exposes a Remote MCP connector (`/mcp/claude`) so authorized Claude Cloud sessions can discover allowed local/cloud peers and dispatch tasks.
+- **Integrity-Checked File Bundles**: Transfer up to 5 attachments (5 MiB combined) in either direction (`/v1/files/...`, `/v1/return-files/...`) with SHA-256 verification and 4-hour expiry.
+- **Process-Incarnation Pinned Orca Routing**: Verifies both terminal `handle` and process `incarnationId` so messages are never misrouted if a terminal restarts.
+
+### Quickstart (English)
+
+```bash
+# 1. List eligible local Orca agent terminals (optional)
+python3 src/secure_bridge.py list-orca
+
+# 2. Generate initial 0600-mode worker.json & client.json with unique 256-bit keys
+python3 src/secure_bridge.py configure \
+  --origin https://bridge.example.com \
+  --claude session_YourClaudeCloudSessionId \
+  --workspace-agent \
+  --claude-connector
+
+# 3. Start the local callback HTTP server (expose via Cloudflare Tunnel / reverse proxy)
+BRIDGE_CALLBACK_ORIGIN=https://bridge.example.com \
+  python3 src/secure_bridge.py callback --port 8766
+
+# 4. Start the signed queue worker (uses macOS kqueue wakeup, zero busy-polling)
+BRIDGE_CALLBACK_ORIGIN=https://bridge.example.com \
+BRIDGE_PROJECT_DIR=/path/to/your/project \
+  python3 src/secure_bridge.py worker src/worker.json
+```
+
+Add `src/agent_mesh_mcp.py` or `src/secure_mcp.py` to your MCP config (see [examples/mcp-config.example.json](examples/mcp-config.example.json)) to unlock `bridge_list`, `bridge_send`, `bridge_status`, `bridge_wait_for_reply`, and `bridge_receive_files`.
+
+---
+
+## 한국어 가이드
+
 **Claude Cloud · Codex · Orca · Antigravity 세션 간 서명 기반 비동기 브릿지 (Zero-Dependency Python 3)**
 
 클라우드 AI 코딩 세션(Claude Code on the Web, Codex Cloud)과 로컬 멀티에이전트 워크스페이스(Orca 터미널, 로컬 CLI 에이전트) 사이에서 **폴링 루프 없이 안전하게 작업을 위임·회신·첨부 전달**하기 위한 경량 브릿지입니다.
