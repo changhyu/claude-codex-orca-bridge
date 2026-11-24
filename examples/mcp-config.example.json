@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "agent-bridge": {
+      "command": "python3",
+      "args": [
+        "/absolute/path/to/claude-codex-bridge/src/agent_mesh_mcp.py"
+      ],
+      "env": {
+        "BRIDGE_PROJECT_DIR": "/absolute/path/to/your/project",
+        "BRIDGE_CALLBACK_ORIGIN": "https://bridge.example.com"
+      }
+    },
+    "codex-bridge-admin": {
+      "command": "python3",
+      "args": [
+        "/absolute/path/to/claude-codex-bridge/src/secure_mcp.py",
+        "/absolute/path/to/claude-codex-bridge/src/client.json"
+      ]
+    }
+  }
+}

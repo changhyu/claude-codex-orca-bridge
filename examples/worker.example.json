@@ -1,0 +1,49 @@
+{
+  "https_origin": "https://bridge.example.com",
+  "clients": {
+    "codex": {
+      "key": "0000000000000000000000000000000000000000000000000000000000000000",
+      "allow": [
+        "claude-peer",
+        "orca-example"
+      ],
+      "label": "Codex MCP",
+      "manage_destinations": true
+    },
+    "workspace_agent": {
+      "key": "1111111111111111111111111111111111111111111111111111111111111111",
+      "allow": [
+        "claude-peer",
+        "orca-example"
+      ],
+      "label": "Workspace Agent MCP"
+    },
+    "claude_callback": {
+      "key": "2222222222222222222222222222222222222222222222222222222222222222",
+      "allow": [
+        "orca-example"
+      ],
+      "label": "Claude Callback Relay"
+    },
+    "claude_roster_connector": {
+      "key": "3333333333333333333333333333333333333333333333333333333333333333",
+      "allow": [
+        "orca-example"
+      ],
+      "label": "Claude Remote MCP Connector"
+    }
+  },
+  "targets": {
+    "claude-peer": {
+      "transport": "claude",
+      "id": "session_ExampleClaudeCloudSessionId01",
+      "display_name": "Claude Cloud Lead"
+    },
+    "orca-example": {
+      "transport": "orca",
+      "id": "term_00000000-0000-0000-0000-000000000000",
+      "incarnation": "inc_example",
+      "display_name": "Local Orca Worker"
+    }
+  }
+}

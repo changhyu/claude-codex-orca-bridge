@@ -1,0 +1,35 @@
+# Byte-compiled / caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.DS_Store
+
+# Live bridge secrets, configs, and runtime state (NEVER commit!)
+src/worker.json
+src/client.json
+src/agent-client.json
+worker.json
+client.json
+agent-client.json
+*.key
+*.pem
+*.token
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+state/
+src/state/
+queue/
+src/queue/
+roster-remote.git/
+src/roster-remote.git/
+roster-cache.git/
+*-backup-*/
+
+# Local environment overrides
+.env
+.env.*
+!.env.example

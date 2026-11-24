@@ -1,0 +1,9 @@
+{
+  "id": "workspace_agent",
+  "key": "1111111111111111111111111111111111111111111111111111111111111111",
+  "allow": [
+    "claude-peer",
+    "orca-example"
+  ],
+  "label": "Workspace Agent MCP"
+}
