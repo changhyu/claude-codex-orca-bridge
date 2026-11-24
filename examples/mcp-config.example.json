@@ -3,7 +3,7 @@
     "agent-bridge": {
       "command": "python3",
       "args": [
-        "/absolute/path/to/claude-codex-bridge/src/agent_mesh_mcp.py"
+        "/absolute/path/to/claude-codex-orca-bridge/src/agent_mesh_mcp.py"
       ],
       "env": {
         "BRIDGE_PROJECT_DIR": "/absolute/path/to/your/project",
@@ -13,8 +13,8 @@
     "codex-bridge-admin": {
       "command": "python3",
       "args": [
-        "/absolute/path/to/claude-codex-bridge/src/secure_mcp.py",
-        "/absolute/path/to/claude-codex-bridge/src/client.json"
+        "/absolute/path/to/claude-codex-orca-bridge/src/secure_mcp.py",
+        "/absolute/path/to/claude-codex-orca-bridge/src/client.json"
       ]
     }
   }
