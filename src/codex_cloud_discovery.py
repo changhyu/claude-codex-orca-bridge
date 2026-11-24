@@ -84,14 +84,15 @@ def destination(state, thread, host=HOST):
     if state.get("id") != thread or state.get("hostId") != host:
         return None
     if host == HOST:
-        if ENVIRONMENTS and state.get("environmentConfigId") not in ENVIRONMENTS:
+        if state.get("environmentConfigId") not in ENVIRONMENTS:
             return None
     elif (host != "local" or state.get("workspaceKind") != "project" or state.get("threadSource") != "user"
           or state.get("attachedThreadParentId") or not in_target_project(state.get("cwd"))):
         return None
     title = "".join(ch for ch in (state.get("title") or "") if ch.isprintable()).strip()
     return {"id": thread, "host": host, "transport": "codex-desktop",
-            "display_name": title[:100] or ("Codex Cloud" if host == HOST else "Codex"), "source": source_for(host)}
+            "display_name": title[:100] or ("Codex Cloud" if host == HOST else "Codex"), "source": source_for(host),
+            **({"environmentConfigId": state["environmentConfigId"]} if host == HOST else {})}
 
 
 class ThreadOwnerUnavailable(DesktopUnavailable):
@@ -187,6 +188,8 @@ def write_registry(thread, row=None, archived=None, host=HOST, *, quiet=False):
 
 
 def inspect_candidate(thread, archived=None, host=HOST):
+    if host == HOST and not ENVIRONMENTS:
+        return
     if archived is True:
         alias = alias_for(thread, host)
         if bridge.secret_file(bridge.BASE / "worker.json")["targets"].get(alias, {}).get("source") == source_for(host):
@@ -277,6 +280,8 @@ def resolve(thread, host, *, open_for_send=False):
     if (thread in config.get("codex_discovery_archived", [])
             or alias_for(thread, host) in config.get("codex_discovery_exclusions", [])):
         raise ValueError("This Codex chat is archived or excluded.")
+    if host == HOST and not ENVIRONMENTS:
+        raise ValueError("Set BRIDGE_CODEX_ENVIRONMENTS to enable cloud discovery.")
     try:
         route = (inspect_for_send if open_for_send else inspect)(thread, host)
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
@@ -328,6 +333,8 @@ def staged_desktop_candidates():
 
 
 def scan_candidates(seed):
+    if not ENVIRONMENTS:
+        return
     try:
         found = staged_desktop_candidates()
     except (OSError, ValueError, KeyError, TypeError, AttributeError):

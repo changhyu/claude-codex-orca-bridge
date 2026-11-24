@@ -36,7 +36,7 @@ from codex_desktop_delivery import ADMIN_ALIAS, ADMIN_THREAD, DesktopUnavailable
 from bridge_usage import claude_usage, gpt_usage
 from bridge_message import claude_prompt, normalize_message
 from bridge import LIMIT, REQUEST_ID, put
-from bridge_settings import CLAUDE_CLI
+from bridge_settings import CLAUDE_CLI, CLAUDE_PEER_ALIAS, CODEX_ENVIRONMENTS
 from mcp_server import session_id
 
 BASE = Path(__file__).resolve().parent
@@ -65,12 +65,26 @@ def load(path, max_bytes=160_000):
 def secret_file(path):
     if path.stat().st_uid != os.getuid() or path.stat().st_mode & 0o077:
         raise ValueError("Configuration must be owned by the current user with mode 0600.")
-    return load(path)
+    config = load(path)
+    if isinstance(config, dict) and "clients" in config and "targets" in config:
+        for policy in config["clients"].values():
+            validate_signing_key(policy.get("key"))
+        for alias, route in config["targets"].items():
+            if (route.get("source") == "codex-bridge-environment"
+                    and route.get("environmentConfigId") not in CODEX_ENVIRONMENTS):
+                raise ValueError(f"Remove or re-discover out-of-scope cloud target {alias}.")
+    elif isinstance(config, dict) and "allow" in config and "id" in config:
+        validate_signing_key(config.get("key"))
+    return config
+
+
+def validate_signing_key(key):
+    if not isinstance(key, str) or not TOKEN.fullmatch(key) or len(set(key)) == 1:
+        raise ValueError("Generate an independent 32-byte random signing key for each client.")
 
 
 def mac(key, payload):
-    if not TOKEN.fullmatch(key):
-        raise ValueError("Invalid signing key.")
+    validate_signing_key(key)
     body = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
     return hmac.new(bytes.fromhex(key), body, hashlib.sha256).hexdigest()
 
@@ -833,6 +847,8 @@ def main():
     setup.add_argument("--origin", required=True)
     setup.add_argument("--claude")
     setup.add_argument("--orca-handle")
+    setup.add_argument("--workspace-agent", action="store_true")
+    setup.add_argument("--claude-connector", action="store_true")
     setup.add_argument("--client-label", default="Codex MCP")
     worker = commands.add_parser("worker")
     worker.add_argument("config", type=Path)
@@ -846,7 +862,9 @@ def main():
     if args.command == "configure":
         targets = {}
         if args.claude:
-            targets["claude"] = {"transport": "claude", "id": session_id(args.claude)}
+            if not ALIAS.fullmatch(CLAUDE_PEER_ALIAS) or (args.orca_handle and CLAUDE_PEER_ALIAS == "orca"):
+                raise SystemExit("Choose a valid, distinct BRIDGE_CLAUDE_PEER_ALIAS.")
+            targets[CLAUDE_PEER_ALIAS] = {"transport": "claude", "id": session_id(args.claude)}
         if args.orca_handle:
             matches = [t for t in orca_bridge.terminals(None) if t["handle"] == args.orca_handle and orca_bridge.is_agent(t)]
             if not matches or not matches[0].get("incarnationId"):
@@ -855,15 +873,31 @@ def main():
                                "incarnation": matches[0]["incarnationId"]}
         if not targets:
             raise SystemExit("Configure at least one destination.")
-        key = secrets.token_hex(32)
-        worker_path, client_path = BASE / "worker.json", BASE / "client.json"
-        if worker_path.exists() or client_path.exists():
-            raise SystemExit("Configuration already exists. Edit worker.json locally to change access.")
-        client = {"key": key, "allow": list(targets), "label": args.client_label}
-        for path, value in ((worker_path, {"https_origin": origin(args.origin), "clients": {"codex": client}, "targets": targets}),
-                            (client_path, {"id": "codex", **client})):
-            with path.open("x", encoding="utf-8") as stream:
-                json.dump(value, stream, ensure_ascii=False, indent=2)
+        if args.claude_connector and not args.claude:
+            raise SystemExit("--claude-connector requires --claude.")
+        clients = {"codex": {"key": secrets.token_hex(32), "allow": list(targets), "label": args.client_label}}
+        configs = {"client.json": {"id": "codex", **clients["codex"]}}
+        if args.workspace_agent:
+            workspace = {"key": secrets.token_hex(32), "allow": list(targets), "label": "Workspace Agent MCP"}
+            clients[agent_mesh.LOCAL_CLIENT] = workspace
+            configs["agent-client.json"] = {"id": agent_mesh.LOCAL_CLIENT, **workspace}
+        if args.claude_connector:
+            for client_id, label in ((agent_mesh.RELAY_CLIENT, "Claude Callback Relay"),
+                                     (CONNECTOR_CLIENT, "Claude Remote MCP Connector")):
+                clients[client_id] = {"key": secrets.token_hex(32), "allow": [], "label": label}
+        configs["worker.json"] = {"https_origin": origin(args.origin), "clients": clients, "targets": targets}
+        # Publish the worker configuration last. Roll back only files created by this invocation.
+        with contextlib.ExitStack() as rollback:
+            for filename, value in configs.items():
+                path = BASE / filename
+                try:
+                    stream = path.open("x", encoding="utf-8")
+                except FileExistsError:
+                    raise SystemExit(f"{filename} already exists. Edit the existing configuration.") from None
+                rollback.callback(path.unlink, missing_ok=True)
+                with stream:
+                    json.dump(value, stream, ensure_ascii=False, indent=2)
+            rollback.pop_all()
         print("Configured " + ", ".join(targets))
     elif args.command == "callback":
         with Server(("127.0.0.1", args.port), Callback) as server:

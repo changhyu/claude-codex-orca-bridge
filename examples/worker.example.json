@@ -2,16 +2,16 @@
   "https_origin": "https://bridge.example.com",
   "clients": {
     "codex": {
-      "key": "0000000000000000000000000000000000000000000000000000000000000000",
+      "key": "<GENERATE_CODEX_KEY>",
       "allow": [
         "claude-peer",
         "orca-example"
       ],
       "label": "Codex MCP",
-      "manage_destinations": true
+      "manage_destinations": false
     },
     "workspace_agent": {
-      "key": "1111111111111111111111111111111111111111111111111111111111111111",
+      "key": "<GENERATE_WORKSPACE_AGENT_KEY>",
       "allow": [
         "claude-peer",
         "orca-example"
@@ -19,14 +19,14 @@
       "label": "Workspace Agent MCP"
     },
     "claude_callback": {
-      "key": "2222222222222222222222222222222222222222222222222222222222222222",
+      "key": "<GENERATE_CLAUDE_CALLBACK_KEY>",
       "allow": [
         "orca-example"
       ],
       "label": "Claude Callback Relay"
     },
     "claude_roster_connector": {
-      "key": "3333333333333333333333333333333333333333333333333333333333333333",
+      "key": "<GENERATE_CLAUDE_ROSTER_CONNECTOR_KEY>",
       "allow": [
         "orca-example"
       ],

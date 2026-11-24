@@ -93,10 +93,12 @@ flowchart LR
 python3 src/secure_bridge.py list-orca
 
 # 초기 설정 파일 생성 (worker.json, client.json — 모드 0600)
-python3 src/secure_bridge.py configure   --origin https://bridge.example.com   --claude session_YourClaudeCloudSessionId
+python3 src/secure_bridge.py configure --origin https://bridge.example.com --claude session_YourClaudeCloudSessionId
 ```
 
-워크스페이스 내 다중 에이전트(`agent_mesh_mcp.py`)까지 함께 쓰려면 [examples/worker.example.json](examples/worker.example.json)과 [examples/agent-client.example.json](examples/agent-client.example.json) 형식을 참고해 `workspace_agent` 클라이언트 키(`openssl rand -hex 32`)를 추가하고 `chmod 600`을 유지하세요.
+기본 설정은 `codex` 클라이언트와 `claude-peer` 수신처를 만듭니다. 로컬 워크스페이스 MCP도 쓸 때는 첫 실행에 `--workspace-agent`를 추가하세요. Claude Remote MCP를 사용할 때는 `--claude-connector`를 함께 지정하세요. 필요한 클라이언트마다 독립된 난수 키가 생성되며, 커넥터의 초기 발송 허용 목록은 비어 있습니다. JSON 예제의 키는 형식을 보여 주는 자리표시자입니다.
+
+기존 설치는 설정 파일을 유지합니다. 기존 Claude 별칭이 `claude`라면 워커와 콜백 서비스에 `BRIDGE_CLAUDE_PEER_ALIAS=claude`를 지정하세요. 기존 예제의 반복 숫자 키를 사용했다면 서비스를 중지하고 클라이언트별로 서로 다른 32바이트 난수 키를 만든 뒤 `worker.json`과 해당 클라이언트 파일의 키를 일치시키세요.
 
 ### 2. 콜백 서버 및 워커 실행
 
@@ -131,6 +133,21 @@ ingress:
 - `bridge_status` / `bridge_wait_for_reply`: 전달·응답 상태 조회
 - `bridge_receive_files`: 원격 에이전트가 업로드한 결과 파일 회수
 
+### 5. Claude Remote MCP 피어 등록 (선택)
+
+1. `--claude-connector`로 초기화한 설정과 HTTPS 콜백을 사용합니다. 비밀번호 관리자에 커넥터 전용 비밀값을 보관하세요. 값은 암호학적으로 무작위인 **소문자 16진수 64자**여야 합니다. 아래 명령은 입력을 가린 채 비밀값 문자열의 SHA-256 지문을 출력합니다.
+
+   ```bash
+   python3 -c 'import getpass, hashlib; print(hashlib.sha256(getpass.getpass("Connector key: ").encode("ascii")).hexdigest())'
+   ```
+
+2. 로컬 `codex` MCP의 `bridge_send`로 `claude-peer`에 등록 요청을 보냅니다. 메시지 첫 줄을 정확히 `BRIDGE_CLAUDE_PEER_ENROLL_V1`로 쓰고 다음 줄부터 지문과 등록 지시를 적으세요. 수신 세션은 일반 회신 전에 요청 봉투의 일회용 Bearer로 `POST /v1/agents/claude-peer/enroll`을 호출합니다. JSON 본문은 `{"request_id":"<봉투의 요청 ID>","fingerprint":"<지문>"}`입니다. HTTP 201이 등록 성공입니다. 별칭을 바꾼 설치는 해당 별칭을 URL에 사용합니다.
+3. 사용자 지정 헤더를 지원하는 Remote MCP 클라이언트에 `https://<콜백 도메인>/mcp/claude`를 등록하고, `x-api-key` 헤더에는 비밀번호 관리자에 저장한 원본 값을 지정하세요. `list_agents`로 실제 발송 허용 목록을 확인하세요. 워크스페이스 탐색을 함께 켜면 해당 프로젝트에서 발견된 Orca 에이전트도 목록에 추가됩니다.
+
+### Codex Cloud 자동 탐색 범위
+
+탐색할 환경 ID를 쉼표로 구분해 `BRIDGE_CODEX_ENVIRONMENTS`에 지정하세요. 빈 값은 클라우드 자동 탐색을 끕니다. 워커, 콜백, MCP 서버와 탐색 프로세스에 동일한 값을 적용하세요. 환경을 제외하거나 예전 버전에서 업그레이드할 때는 서비스를 중지하고 `worker.json`에서 해당 환경 또는 환경 ID가 기록되지 않은 `source: codex-bridge-environment` 대상을 제거하세요. 관련 별칭도 각 클라이언트의 `allow`에서 제거한 뒤 재시작하면 허용된 환경을 다시 탐색할 수 있습니다. 수동으로 등록한 수신처는 별도로 관리합니다.
+
 ---
 
 ## 보안 원칙 및 주의사항
@@ -150,6 +167,8 @@ ingress:
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+공개 전 내부 식별자를 추가로 검사하려면 한 줄에 한 항목씩 담은 비공개 파일의 절대 경로를 `BRIDGE_PRIVATE_TERMS_FILE`로 지정해 같은 테스트를 실행하세요.
 
 ---
 

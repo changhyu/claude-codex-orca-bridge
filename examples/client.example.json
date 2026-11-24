@@ -1,6 +1,6 @@
 {
   "id": "codex",
-  "key": "0000000000000000000000000000000000000000000000000000000000000000",
+  "key": "<GENERATE_CODEX_KEY>",
   "allow": [
     "claude-peer",
     "orca-example"

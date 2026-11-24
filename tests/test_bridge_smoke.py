@@ -6,9 +6,12 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = REPO_ROOT / "src"
@@ -16,24 +19,120 @@ sys.path.insert(0, str(SRC_DIR))
 
 
 class BridgeSmokeTest(unittest.TestCase):
-    def test_no_proprietary_identifiers_anywhere_in_repo(self):
-        forbidden = re.compile(
-            r"cargoro|car-goro|카고로|changhyu|hdrhd|부사장|준법|홍보팀|에스크로|mbcenter|중계기|"
-            r"01a1de11|6af96f89|6af95d7b|asenvcfg_|af5ba4fb|optimistic-fermat|/Users/caro|"
-            r"ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}",
-            re.I,
-        )
-        checked = 0
-        for path in REPO_ROOT.rglob("*"):
-            if ".git" in path.parts or "__pycache__" in path.parts or path.is_dir():
-                continue
-            if path.resolve() == Path(__file__).resolve():
-                continue
-            text = path.read_text(encoding="utf-8")
-            match = forbidden.search(text)
-            self.assertIsNone(match, f"Forbidden identifier {match.group(0) if match else ''} in {path}")
-            checked += 1
-        self.assertGreaterEqual(checked, 30)
+    def test_release_files(self):
+        patterns = [re.compile(r"(?:ghp_|gho_)[A-Za-z0-9]{20,}")]
+        private_terms = os.environ.get("BRIDGE_PRIVATE_TERMS_FILE")
+        if private_terms:
+            terms = Path(private_terms).read_text(encoding="utf-8").splitlines()
+            patterns.extend(re.compile(re.escape(term), re.I) for term in terms if term.strip())
+
+        if (REPO_ROOT / ".git").exists():
+            names = subprocess.check_output(["git", "ls-files", "-z"], cwd=REPO_ROOT)
+            paths = [REPO_ROOT / os.fsdecode(name) for name in names.split(b"\0") if name]
+        else:
+            paths = [p for p in REPO_ROOT.rglob("*") if p.is_file() and "__pycache__" not in p.parts]
+        self.assertIn(Path(__file__).resolve(), paths)
+        for path in paths:
+            content = path.read_text(encoding="utf-8")
+            for pattern in patterns:
+                self.assertFalse(pattern.search(content), f"Release scan matched in {path.relative_to(REPO_ROOT)}")
+
+    def test_example_and_legacy_keys_are_rejected(self):
+        import secure_bridge
+
+        examples = REPO_ROOT / "examples"
+        worker = json.loads((examples / "worker.example.json").read_text())
+        keys = [policy["key"] for policy in worker["clients"].values()]
+        keys.extend(json.loads(p.read_text())["key"] for p in examples.glob("*client.example.json"))
+        for key in keys + [str(n) * 64 for n in range(4)]:
+            with self.assertRaises(ValueError):
+                secure_bridge.mac(key, {"message": "hello"})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "worker.json"
+            path.write_text(json.dumps(worker))
+            path.chmod(0o600)
+            with self.assertRaisesRegex(ValueError, "signing key"):
+                secure_bridge.secret_file(path)
+
+    def test_cloud_discovery_requires_explicit_environment(self):
+        import codex_cloud_discovery as discovery
+        import secure_bridge
+
+        state = {"id": "demo", "hostId": discovery.HOST, "environmentConfigId": "project-a"}
+        for allowed in (set(), {"project-b"}):
+            with patch.object(discovery, "ENVIRONMENTS", allowed):
+                self.assertIsNone(discovery.destination(state, "demo"))
+        with patch.object(discovery, "ENVIRONMENTS", {"project-a"}):
+            route = discovery.destination(state, "demo")
+            self.assertEqual(route["environmentConfigId"], "project-a")
+            self.assertIsNone(discovery.destination({**state, "environmentConfigId": None}, "demo"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "worker.json"
+            for stored, allowed, accepted in (
+                (route, {"project-a"}, True), (route, {"project-b"}, False),
+                (route, set(), False), ({**route, "environmentConfigId": None}, {"project-a"}, False),
+            ):
+                config = {"clients": {}, "targets": {"demo": stored}}
+                path.write_text(json.dumps(config))
+                path.chmod(0o600)
+                with patch.object(secure_bridge, "CODEX_ENVIRONMENTS", allowed):
+                    if accepted:
+                        self.assertEqual(secure_bridge.secret_file(path), config)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "out-of-scope"):
+                            secure_bridge.secret_file(path)
+
+    def test_new_install_and_peer_enrollment(self):
+        import secure_bridge
+        import claude_connector
+        import claude_peer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "src"
+            src.mkdir()
+            for module in SRC_DIR.glob("*.py"):
+                shutil.copyfile(module, src / module.name)
+            state = src / "state"
+            env = {**os.environ, "SECURE_BRIDGE_STATE": str(state), "BRIDGE_CLAUDE_PEER_ALIAS": "claude-peer"}
+            cli = [sys.executable, "-B", str(src / "secure_bridge.py"), "configure",
+                   "--origin", "https://bridge.example.com", "--claude", "session_TestInstall",
+                   "--workspace-agent", "--claude-connector"]
+            subprocess.run(cli, env=env, check=True, capture_output=True)
+            cfg = secure_bridge.secret_file(src / "worker.json")
+            self.assertEqual(set(cfg["targets"]), {"claude-peer"})
+            keys = [policy["key"] for policy in cfg["clients"].values()]
+            self.assertEqual(len(set(keys)), 4)
+            for filename in ("worker.json", "client.json", "agent-client.json"):
+                self.assertEqual((src / filename).stat().st_mode & 0o777, 0o600)
+            for filename in ("client.json", "agent-client.json"):
+                client = secure_bridge.secret_file(src / filename)
+                self.assertEqual(client["key"], cfg["clients"][client["id"]]["key"])
+            repeat = subprocess.run(cli, env=env, capture_output=True)
+            self.assertNotEqual(repeat.returncode, 0)
+            self.assertEqual(cfg, secure_bridge.secret_file(src / "worker.json"))
+
+            credential = secrets.token_hex(32)
+            fingerprint = secure_bridge.token_hash(credential)
+            message = claude_peer.ENROLLMENT_MARKER + fingerprint
+            send = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                "name": "bridge_send", "arguments": {"target": "claude-peer", "message": message}}}
+            result = subprocess.run([sys.executable, "-B", str(src / "secure_mcp.py"), str(src / "client.json")],
+                                    input=json.dumps(send) + "\n", text=True, capture_output=True, env=env, check=True)
+            payload = json.loads(json.loads(result.stdout)["result"]["content"][0]["text"])
+            rid = payload["request_id"]
+            with patch.object(secure_bridge, "BASE", src), patch.object(secure_bridge, "ROOT", state), \
+                    patch.object(claude_peer, "CLAUDE_ALIAS", "claude-peer"):
+                secure_bridge.audit(rid, "codex", "claude-peer", "sending")
+                ticket = secure_bridge.register_reply(rid, "claude", message)
+                enrollment = json.dumps({"request_id": rid, "fingerprint": fingerprint}).encode()
+                status, _ = claude_peer.handle(secure_bridge, claude_peer.ROUTE + "/enroll", ticket, enrollment)
+                self.assertEqual(status, 201)
+                listing = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                      "params": {"name": "list_agents", "arguments": {}}}).encode()
+                status, response = claude_connector.handle(secure_bridge, credential, listing)
+                self.assertEqual(status, 200)
+                self.assertEqual(response["result"]["structuredContent"]["agents"], [])
 
     def test_hmac_sign_and_verify_tamper_closed(self):
         import secure_bridge
