@@ -84,7 +84,7 @@ def send(bridge, bearer, data):
                          return_to_sender=push)
 
 
-def queue_message(bridge, bearer, nonce, value, target, *, roster, return_to_sender=False, no_reply=False):
+def queue_message(bridge, bearer, nonce, value, target, *, roster, return_to_sender=False, no_reply=False, expect_reply=False):
     if not isinstance(nonce, str):
         raise ValueError("Invalid nonce.")
     if not re.fullmatch(r"[0-9a-f]{32}", nonce):
@@ -98,6 +98,8 @@ def queue_message(bridge, bearer, nonce, value, target, *, roster, return_to_sen
             raise ValueError("no_reply cannot be combined with Bridge-Reply-To.")
         return_to_sender = True
         body = body.removeprefix(RETURN_MARKER)
+    if no_reply and return_to_sender:
+        raise ValueError("no_reply cannot be combined with return_to_sender.")
     if not body.strip():
         raise ValueError("Expected a nonblank message.")
     message = f"[Bridge from {sender}]\n{body}"
@@ -111,6 +113,9 @@ def queue_message(bridge, bearer, nonce, value, target, *, roster, return_to_sen
     destination = config["targets"].get(target)
     if not destination or target not in client["allow"]:
         raise PermissionError("The destination is outside the approved scope or unavailable.")
+    effective_no_reply = True if no_reply else (
+        not (return_to_sender or expect_reply) if destination["transport"] == "claude" else False
+    )
     callback = None
     if return_to_sender:
         receiver = config["targets"].get(CLAUDE_ALIAS, {})
@@ -139,8 +144,10 @@ def queue_message(bridge, bearer, nonce, value, target, *, roster, return_to_sen
         if callback:
             request["claude_return_to"] = callback
             request["claude_return_alias"] = CLAUDE_ALIAS
-        if no_reply:
+        if effective_no_reply:
             request["no_reply"] = True
+        elif expect_reply or return_to_sender:
+            request["expect_reply"] = True
         path = bridge.location("requests", request_id)
         conn.execute("INSERT INTO outbound VALUES (?, ?, ?, ?)", (request_id, stored_nonce, digest, now))
         # The queue and audit also carry a stable ID, so an ambiguous retry cannot deliver twice.

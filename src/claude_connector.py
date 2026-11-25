@@ -46,15 +46,17 @@ TOOLS = [
         "name": "send_to_agent",
         "description": (
             "Send one authorized message to an alias returned by list_agents. "
-            f"Start the message with Bridge-Reply-To: {CLAUDE_PEER_ALIAS} on its own line "
-            "to post the result to the registered Claude peer chat. "
-            "For a received bridge request, use its Bridge-Forward line to receive the result in that chat."
+            "Plain message body is delivered by default to Claude sessions; "
+            f"start the message with Bridge-Reply-To: {CLAUDE_PEER_ALIAS} on its own line "
+            "to post the result to the registered Claude peer chat, "
+            "or pass no_reply: true for one-way notifications."
         ),
         "inputSchema": {
             "type": "object", "properties": {
                 "target": {"type": "string"}, "message": {"type": "string"},
                 "nonce": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
-                "no_reply": {"type": "boolean", "description": "Deliver as a one-way notification without waiting for a reply."},
+                "no_reply": {"type": "boolean", "description": "Deliver plain body without allocating a reply lease."},
+                "expect_reply": {"type": "boolean", "description": "Attach the compact reply callback envelope when targeting a Claude session."},
             }, "required": ["target", "message"], "additionalProperties": False,
         },
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
@@ -107,11 +109,15 @@ def handle(bridge, bearer, raw):
                     raise ValueError("list_agents accepts no arguments.")
                 data = {"agents": directory(bridge)}
             elif params.get("name") == "send_to_agent":
-                if not {"target", "message"} <= set(args) <= {"target", "message", "nonce", "no_reply"}:
+                if not {"target", "message"} <= set(args) <= {"target", "message", "nonce", "no_reply", "expect_reply"}:
                     raise ValueError("Invalid send_to_agent arguments.")
-                if type(args.get("no_reply", False)) is not bool:
-                    raise ValueError("no_reply must be a boolean.")
+                for flag in ("no_reply", "expect_reply"):
+                    if type(args.get(flag, False)) is not bool:
+                        raise ValueError(f"{flag} must be a boolean.")
                 no_reply = args.get("no_reply", False)
+                expect_reply = args.get("expect_reply", False)
+                if no_reply and expect_reply:
+                    raise ValueError("no_reply and expect_reply cannot both be true.")
                 text = args["message"]
                 forwarded = CONNECTOR_FORWARD.match(text) if isinstance(text, str) else None
                 if forwarded:
@@ -126,7 +132,7 @@ def handle(bridge, bearer, raw):
                 else:
                     data = claude_peer.queue_message(
                         bridge, bearer, args.get("nonce", uuid.uuid4().hex),
-                        text, args["target"], roster=True, no_reply=no_reply,
+                        text, args["target"], roster=True, no_reply=no_reply, expect_reply=expect_reply,
                     )
             else:
                 raise ValueError("Unknown MCP tool.")

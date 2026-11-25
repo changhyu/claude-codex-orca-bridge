@@ -24,7 +24,8 @@ SEND = {
     "description": (
         "Send a new authorized message to the explicitly selected bridge agent. "
         "Choose an alias from bridge_manage action list result.recipients or the local bridge_list tool. "
-        "For a reply to an existing request, use that request's reply channel to reach its original sender. "
+        "Plain message body is delivered by default to Claude sessions without a callback header; "
+        "set expect_reply: true or reply_to only when an HTTP reply callback is needed. "
         "Optional attachments transfer base64 file bytes through expiring authenticated HTTPS downloads."
     ),
     "inputSchema": {
@@ -33,7 +34,9 @@ SEND = {
                        "message": {"type": "string"},
                        "attachments": bridge_files.SCHEMA,
                        "receive_files": {"type": "boolean", "description": "Allow this recipient to upload result files for this request (4 hours)."},
-                       "no_reply": {"type": "boolean", "description": "Deliver as a one-way notification without allocating a reply token or waiting for a reply."},
+                       "no_reply": {"type": "boolean", "description": "Deliver plain body without allocating a reply token or callback header."},
+                       "expect_reply": {"type": "boolean", "description": "Attach the compact reply callback header so the recipient can POST a direct reply."},
+                       "allow_forward": {"type": "boolean", "description": "Include a one-hop delegation proof line in the fallback reply envelope."},
                        "reply_to": {"type": "string"}, "forward_to": {"type": "string"}},
         "required": ["target", "message"], "additionalProperties": False,
     },
@@ -99,7 +102,7 @@ def call(name, args, client):
                 or type(args.get("include_content", False)) is not bool):
             raise ValueError("Invalid result file arguments.")
         return bridge_return_files.receive(bridge_api, args["request_id"], client, args.get("include_content", False))
-    if name == SEND["name"] and {"target", "message"} <= args.keys() <= {"target", "message", "reply_to", "forward_to", "attachments", "receive_files", "no_reply"}:
+    if name == SEND["name"] and {"target", "message"} <= args.keys() <= {"target", "message", "reply_to", "forward_to", "attachments", "receive_files", "no_reply", "expect_reply", "allow_forward"}:
         alias, message = args["target"], args["message"]
         if not isinstance(alias, str) or not ALIAS.fullmatch(alias) or alias not in client["allow"]:
             raise ValueError("Target alias is not configured for this client.")
@@ -109,14 +112,19 @@ def call(name, args, client):
         destination = config["targets"].get(alias)
         if not destination or alias not in config["clients"][client["id"]]["allow"]:
             raise ValueError("Target alias is unavailable.")
-        if type(args.get("receive_files", False)) is not bool:
-            raise ValueError("receive_files must be a boolean.")
-        if type(args.get("no_reply", False)) is not bool:
-            raise ValueError("no_reply must be a boolean.")
+        for flag in ("receive_files", "no_reply", "expect_reply", "allow_forward"):
+            if type(args.get(flag, False)) is not bool:
+                raise ValueError(f"{flag} must be a boolean.")
         receive_files = args.get("receive_files", False)
-        no_reply = args.get("no_reply", False)
-        if no_reply and (receive_files or "reply_to" in args or "forward_to" in args):
-            raise ValueError("no_reply cannot be combined with reply_to, forward_to, or receive_files.")
+        explicit_no_reply = args.get("no_reply", False)
+        expect_reply = args.get("expect_reply", False)
+        allow_forward = args.get("allow_forward", False)
+        if explicit_no_reply and (expect_reply or allow_forward or receive_files or "reply_to" in args or "forward_to" in args):
+            raise ValueError("no_reply cannot be combined with expect_reply, allow_forward, reply_to, forward_to, or receive_files.")
+        import claude_peer
+        enrolling = message.startswith(claude_peer.ENROLLMENT_MARKER)
+        needs_reply = bool(expect_reply or allow_forward or receive_files or "reply_to" in args or "forward_to" in args or enrolling)
+        no_reply = True if explicit_no_reply else (not needs_reply if destination["transport"] == "claude" else False)
         decoded = bridge_files.decode(args["attachments"]) if "attachments" in args else None
         signed_cloud_return = message.startswith(cloud_inbox.RETURN_HEADER)
         if (decoded is not None or receive_files) and (signed_cloud_return or "forward_to" in args):
@@ -129,7 +137,9 @@ def call(name, args, client):
             validate_message(message)
         data = {"request_id": rid, "client": client["id"], "target": alias, "message": message,
                 "created": time.time(), "destination": bridge_api.destination_identity(destination),
-                **({"no_reply": True} if no_reply else {})}
+                **({"no_reply": True} if no_reply else {}),
+                **({"expect_reply": True} if expect_reply and not no_reply else {}),
+                **({"allow_forward": True} if allow_forward and not no_reply else {})}
         if signed_cloud_return:
             data["signed_vice_return"] = True
             cloud_inbox.save_once(bridge_api, rid, data, client["key"])

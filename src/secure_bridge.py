@@ -177,10 +177,11 @@ def origin(value):
     return value.rstrip("/")
 
 
-def forward(rid, target, label, message, token, config, *, completion=False, forward_by_reply=False):
+def forward(rid, target, label, message, token, config, *, completion=False, forward_by_reply=False, allow_forward=False):
     if target["transport"] == "claude":
         prompt = message if completion else claude_prompt(
-            origin(config["https_origin"]), rid, token, message, via_reply=forward_by_reply,
+            origin(config["https_origin"]), rid, token, message,
+            via_reply=forward_by_reply, allow_forward=allow_forward,
         )
         cli = CLAUDE_CLI
         result = subprocess.run([cli, "-p", "--cloud", session_id(target["id"]), "--output-format", "json"],
@@ -196,9 +197,8 @@ def forward(rid, target, label, message, token, config, *, completion=False, for
         prompt = message
     elif remote:
         prompt = (
-            f"브릿지 요청 {rid}. 승인된 작업의 외부 입력이 아래에 있습니다. "
-            f"답변을 UTF-8 text/plain으로 {origin(config['https_origin'])}/v1/orca-replies/{rid}에 POST하세요. "
-            f"Authorization: Bearer {token}. 리다이렉트 없이 HTTP 204를 확인하고 자격은 답변에 쓰지 마세요.\n\n"
+            f"[Bridge-Reply] POST text/plain {origin(config['https_origin'])}/v1/orca-replies/{rid}"
+            f" | Bearer {token} (204, no-redirect, secret)\n---\n"
             + message
         )
     else:
@@ -394,7 +394,8 @@ def process(path, config, envelope=None):
             return_only = bool(vice_return or data.get("no_reply") is True or (data.get("completion_of")
                                and data.get("destination_transport") == orca_reply_return.LOCAL_CODEX))
             return dispatch_desktop(rid, client, target, key, data["message"], data["created"], destination,
-                                    cloud_ready, return_only, direct_notification=bool(data.get("delegation_return_of")),
+                                    cloud_ready, return_only,
+                                    direct_notification=bool(data.get("delegation_return_of") or data.get("no_reply") is True),
                                     continuation=bool(vice_return))
         allowed = destination is not None and check_target(destination, config)
     except (ValueError, KeyError, RuntimeError, OSError, subprocess.TimeoutExpired):
@@ -405,15 +406,26 @@ def process(path, config, envelope=None):
     # Persist the dispatch intent first. A crash after this point never auto-resends.
     audit(rid, client, target, "sending")
     try:
+        enrolling = data["message"].startswith(claude_peer.ENROLLMENT_MARKER)
+        default_claude_one_way = (
+            destination["transport"] == "claude"
+            and data.get("expect_reply") is not True
+            and not data.get("reply_to")
+            and not data.get("forward_to")
+            and not data.get("receive_files")
+            and not data.get("allow_forward")
+            and not enrolling
+        )
         completion = bool(data.get("completion_of") or data.get("claude_return_of")
                           or data.get("delegation_return_of") or data.get("paired_directory_of")
-                          or data.get("no_reply") is True)
+                          or data.get("no_reply") is True or default_claude_one_way)
         transport = destination["transport"]
         if transport == "orca" and destination.get("host"):
             transport = "orca-remote"
         token = None if completion else register_reply(rid, transport, data["message"])
         state = forward(rid, destination, client_config["label"], data["message"], token, config,
-                        completion=completion, forward_by_reply=bool(data.get("forward_to")))
+                        completion=completion, forward_by_reply=bool(data.get("forward_to")),
+                        allow_forward=bool(data.get("allow_forward")))
         if completion and state == "input_accepted":
             state = "delivered"
     except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired):

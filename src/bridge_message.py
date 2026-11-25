@@ -9,6 +9,12 @@ from bridge_settings import CALLBACK_ORIGIN
 
 CONNECTOR_FORWARD = re.compile(r"\ABridge-Forward: ([0-9a-f]{32}) ([0-9a-f]{64})\r?\n")
 BODY_SEPARATOR = "\n\nRequested message:\n"
+SLIM = re.compile(
+    r"\A\[Bridge-Reply\] POST text/plain https://[^\s/]+/v1/(?:orca-)?replies/(?P<id>[0-9a-f]{32})"
+    r" \| Bearer [0-9a-f]{64} \(204, no-redirect, secret\)\r?\n"
+    r"(?:\[Delegate\] Bridge-Forward: (?P=id) [0-9a-f]{64}\r?\n)?"
+    r"---\r?\n"
+)
 LEGACY = re.compile(
     r'\ABridge request (?P<id>[0-9a-f]{32}) from "(?:[^"\\]|\\.)*"\. '
     r"After answering, POST the plain UTF-8 answer to "
@@ -33,6 +39,10 @@ def normalize_message(message):
         raise ValueError("Expected a message string.")
     while True:
         leading = message.lstrip(" \t\r\n")
+        slim = SLIM.match(leading)
+        if slim:
+            message = leading[slim.end():]
+            continue
         start = LEGACY.match(leading) or COMPACT.match(leading)
         if not start:
             return message
@@ -66,24 +76,18 @@ def connector_forward_proof(request_id, token_hash):
                     hashlib.sha256).hexdigest()
 
 
-def claude_prompt(base, request_id, token, message, *, via_reply=False):
-    """Keep protocol instructions compact and separate from the message."""
+def claude_prompt(base, request_id, token, message, *, via_reply=False, allow_forward=False):
+    """Compact v2 fallback envelope used only when an HTTP reply lease is requested."""
     effective_base = (base or CALLBACK_ORIGIN).rstrip("/")
     forwarding = ""
-    if not via_reply:
+    if allow_forward and not via_reply:
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         proof = connector_forward_proof(request_id, token_hash)
-        forwarding = (
-            "\nIf asked to delegate, use the MCP send_to_agent tool. "
-            "Copy this first line into its message before the task, and keep it out of chat replies:\n"
-            f"Bridge-Forward: {request_id} {proof}\n"
-            "The result returns to this chat."
-        )
+        forwarding = f"[Delegate] Bridge-Forward: {request_id} {proof}\n"
     return (
-        f"Bridge {request_id}. Base: {effective_base}/v1. Bearer: {token}.\n"
-        "POST your UTF-8 reply (text/plain) to Base/replies/Bridge ID "
-        "(no redirects; expect 204). Keep the credential private."
+        f"[Bridge-Reply] POST text/plain {effective_base}/v1/replies/{request_id}"
+        f" | Bearer {token} (204, no-redirect, secret)\n"
         + forwarding
-        + BODY_SEPARATOR
+        + "---\n"
         + normalize_message(message)
     )

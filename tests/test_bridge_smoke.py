@@ -153,8 +153,23 @@ class BridgeSmokeTest(unittest.TestCase):
         rid = "b" * 32
         tok = "c" * 64
         wrapped = bridge_message.claude_prompt("https://bridge.example.com", rid, tok, "Run unit tests please.")
-        self.assertIn("Bridge-Forward:", wrapped)
+        self.assertTrue(wrapped.startswith(f"[Bridge-Reply] POST text/plain https://bridge.example.com/v1/replies/{rid}"))
+        self.assertNotIn("Bridge-Forward:", wrapped)
         self.assertEqual(bridge_message.normalize_message(wrapped), "Run unit tests please.")
+
+        wrapped_fwd = bridge_message.claude_prompt(
+            "https://bridge.example.com", rid, tok, "Delegate if needed.", allow_forward=True
+        )
+        self.assertIn("[Delegate] Bridge-Forward:", wrapped_fwd)
+        self.assertEqual(bridge_message.normalize_message(wrapped_fwd), "Delegate if needed.")
+
+        legacy_v1 = (
+            f"Bridge {rid}. Base: https://bridge.example.com/v1. Bearer: {tok}.\n"
+            "POST your UTF-8 reply (text/plain) to Base/replies/Bridge ID "
+            "(no redirects; expect 204). Keep the credential private.\n\n"
+            "Requested message:\nLegacy body preserved."
+        )
+        self.assertEqual(bridge_message.normalize_message(legacy_v1), "Legacy body preserved.")
 
     def test_secure_mcp_send_status_and_file_attachments(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -278,12 +293,38 @@ class BridgeSmokeTest(unittest.TestCase):
 
             # Must not wrap with Bearer token envelope and must finalize as delivered
             self.assertEqual(captured["prompt"], "One-way routing update")
-            self.assertNotIn("Bearer:", captured["prompt"])
+            self.assertNotIn("Bearer", captured["prompt"])
             status_resp = secure_mcp.call("bridge_status", {"request_id": rid}, client_cfg)
             self.assertEqual(status_resp["state"], "delivered")
             with secure_bridge.database("callback") as con:
                 row = con.execute("SELECT 1 FROM replies WHERE id=?", (rid,)).fetchone()
             self.assertIsNone(row)
+
+            # Default send to Claude (without no_reply or expect_reply) also delivers plain body with 0 header
+            default_resp = secure_mcp.call(
+                "bridge_send",
+                {"target": "claude-peer", "message": "Plain report body by default"},
+                client_cfg,
+            )
+            default_rid = default_resp["request_id"]
+            with patch("secure_bridge.subprocess.run", side_effect=fake_run):
+                secure_bridge.process(secure_bridge.location("requests", default_rid), worker_cfg)
+            self.assertEqual(captured["prompt"], "Plain report body by default")
+            self.assertEqual(secure_mcp.call("bridge_status", {"request_id": default_rid}, client_cfg)["state"], "delivered")
+
+            # Opt-in expect_reply=True attaches the slim 2-line [Bridge-Reply] fallback envelope
+            reply_resp = secure_mcp.call(
+                "bridge_send",
+                {"target": "claude-peer", "message": "Need synchronous HTTP answer", "expect_reply": True},
+                client_cfg,
+            )
+            reply_rid = reply_resp["request_id"]
+            with patch("secure_bridge.subprocess.run", side_effect=fake_run):
+                secure_bridge.process(secure_bridge.location("requests", reply_rid), worker_cfg)
+            self.assertTrue(captured["prompt"].startswith(f"[Bridge-Reply] POST text/plain https://bridge.example.com/v1/replies/{reply_rid}"))
+            self.assertNotIn("Bridge-Forward:", captured["prompt"])
+            self.assertIn("\n---\nNeed synchronous HTTP answer", captured["prompt"])
+            self.assertEqual(secure_mcp.call("bridge_status", {"request_id": reply_rid}, client_cfg)["state"], "input_accepted")
 
     def test_orca_sync_preserves_display_name_and_admin_rebind_rename(self):
         import bridge_admin
