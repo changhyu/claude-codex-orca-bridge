@@ -22,6 +22,8 @@ ACTIONS = {
     "add_orca": {"identifier"},
     "disable_orca": {"identifier"},
     "add_claude": {"alias", "session_id"},
+    "rebind_claude": {"alias", "session_id"},
+    "rename": {"alias", "display_name"},
     "disable": {"alias"},
     "enable_orca": {"alias"},
 }
@@ -30,7 +32,7 @@ ADMIN_TOOL = {
     "description": "List bridge destinations or perform a user-authorized local enrollment, sync, or removal.",
     "inputSchema": {
         "type": "object",
-        "properties": {"action": {"enum": list(ACTIONS)}, "alias": {"type": "string"}, "session_id": {"type": "string"}, "identifier": {"type": "string", "maxLength": 240}},
+        "properties": {"action": {"enum": list(ACTIONS)}, "alias": {"type": "string"}, "session_id": {"type": "string"}, "display_name": {"type": "string", "maxLength": 100}, "identifier": {"type": "string", "maxLength": 240}},
         "required": ["action"],
         "additionalProperties": False,
     },
@@ -57,8 +59,12 @@ def validate(arguments):
     alias = arguments.get("alias")
     if "alias" in arguments and (not isinstance(alias, str) or not ALIAS.fullmatch(alias)):
         raise ValueError("Invalid destination alias.")
-    if action == "add_claude":
+    if action in {"add_claude", "rebind_claude"}:
         session_id(arguments["session_id"])
+    if action == "rename":
+        label = arguments.get("display_name")
+        if not isinstance(label, str) or not label.strip() or len(label) > 100 or not all(c.isprintable() for c in label):
+            raise ValueError("Invalid display_name.")
     if "identifier" in arguments:
         identifier = arguments["identifier"]
         if not isinstance(identifier, str) or not identifier.strip() or len(identifier) > 240:
@@ -114,6 +120,19 @@ def changes(worker, client, arguments, orca_commands=None):
             if alias not in config["allow"]:
                 config["allow"].append(alias)
         return {"alias": alias, "transport": "claude"}
+    if action == "rebind_claude":
+        if alias not in targets or targets[alias].get("transport") != "claude":
+            raise ValueError("Alias is not a registered Claude destination.")
+        targets[alias] = {**targets[alias], "transport": "claude", "id": session_id(arguments["session_id"])}
+        return {"alias": alias, "transport": "claude", "id": targets[alias]["id"]}
+    if action == "rename":
+        if alias not in targets:
+            raise ValueError("Unknown destination alias.")
+        clean_name = arguments["display_name"].strip()
+        targets[alias]["display_name"] = clean_name
+        if alias in worker.get("claude_connector_roster_names", {}):
+            worker["claude_connector_roster_names"][alias] = clean_name
+        return {"alias": alias, "display_name": clean_name}
     if action == "disable":
         removed = targets.pop(alias, None)
         if removed and removed.get("source") in {"codex-bridge-environment", "codex-bridge-local-project"}:

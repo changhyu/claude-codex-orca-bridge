@@ -94,7 +94,11 @@ def update(worker, client, rows, action, identifier):
             name = aliases.get(active_handle, "orca-" + active_handle[5:].lower())
             if name in targets and name not in previous:
                 raise ValueError("기존 전송 대상과 Orca 별칭이 겹칩니다.")
-            updated[name] = {"transport": "orca", "id": active_handle, "incarnation": row["incarnationId"]}
+            existing = previous.get(name, {})
+            preserved = {k: v for k, v in existing.items()
+                         if existing.get("id") == active_handle
+                         and k in ("display_name", "source", "pinned_connector", "project_live_orca", "worktree")}
+            updated[name] = {**preserved, "transport": "orca", "id": active_handle, "incarnation": row["incarnationId"]}
 
     for name in previous:
         del targets[name]

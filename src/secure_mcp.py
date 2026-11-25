@@ -33,6 +33,7 @@ SEND = {
                        "message": {"type": "string"},
                        "attachments": bridge_files.SCHEMA,
                        "receive_files": {"type": "boolean", "description": "Allow this recipient to upload result files for this request (4 hours)."},
+                       "no_reply": {"type": "boolean", "description": "Deliver as a one-way notification without allocating a reply token or waiting for a reply."},
                        "reply_to": {"type": "string"}, "forward_to": {"type": "string"}},
         "required": ["target", "message"], "additionalProperties": False,
     },
@@ -98,7 +99,7 @@ def call(name, args, client):
                 or type(args.get("include_content", False)) is not bool):
             raise ValueError("Invalid result file arguments.")
         return bridge_return_files.receive(bridge_api, args["request_id"], client, args.get("include_content", False))
-    if name == SEND["name"] and {"target", "message"} <= args.keys() <= {"target", "message", "reply_to", "forward_to", "attachments", "receive_files"}:
+    if name == SEND["name"] and {"target", "message"} <= args.keys() <= {"target", "message", "reply_to", "forward_to", "attachments", "receive_files", "no_reply"}:
         alias, message = args["target"], args["message"]
         if not isinstance(alias, str) or not ALIAS.fullmatch(alias) or alias not in client["allow"]:
             raise ValueError("Target alias is not configured for this client.")
@@ -110,7 +111,12 @@ def call(name, args, client):
             raise ValueError("Target alias is unavailable.")
         if type(args.get("receive_files", False)) is not bool:
             raise ValueError("receive_files must be a boolean.")
+        if type(args.get("no_reply", False)) is not bool:
+            raise ValueError("no_reply must be a boolean.")
         receive_files = args.get("receive_files", False)
+        no_reply = args.get("no_reply", False)
+        if no_reply and (receive_files or "reply_to" in args or "forward_to" in args):
+            raise ValueError("no_reply cannot be combined with reply_to, forward_to, or receive_files.")
         decoded = bridge_files.decode(args["attachments"]) if "attachments" in args else None
         signed_cloud_return = message.startswith(cloud_inbox.RETURN_HEADER)
         if (decoded is not None or receive_files) and (signed_cloud_return or "forward_to" in args):
@@ -122,7 +128,8 @@ def call(name, args, client):
             rid, message = cloud_inbox.approve_return(bridge_api, client["id"], alias, config, message)
             validate_message(message)
         data = {"request_id": rid, "client": client["id"], "target": alias, "message": message,
-                "created": time.time(), "destination": bridge_api.destination_identity(destination)}
+                "created": time.time(), "destination": bridge_api.destination_identity(destination),
+                **({"no_reply": True} if no_reply else {})}
         if signed_cloud_return:
             data["signed_vice_return"] = True
             cloud_inbox.save_once(bridge_api, rid, data, client["key"])

@@ -84,7 +84,7 @@ def send(bridge, bearer, data):
                          return_to_sender=push)
 
 
-def queue_message(bridge, bearer, nonce, value, target, *, roster, return_to_sender=False):
+def queue_message(bridge, bearer, nonce, value, target, *, roster, return_to_sender=False, no_reply=False):
     if not isinstance(nonce, str):
         raise ValueError("Invalid nonce.")
     if not re.fullmatch(r"[0-9a-f]{32}", nonce):
@@ -94,6 +94,8 @@ def queue_message(bridge, bearer, nonce, value, target, *, roster, return_to_sen
     sender = "Claude MCP connector" if roster else CLAUDE_ALIAS
     body = normalize_message(value)
     if roster and body.startswith(RETURN_MARKER):
+        if no_reply:
+            raise ValueError("no_reply cannot be combined with Bridge-Reply-To.")
         return_to_sender = True
         body = body.removeprefix(RETURN_MARKER)
     if not body.strip():
@@ -136,6 +138,9 @@ def queue_message(bridge, bearer, nonce, value, target, *, roster, return_to_sen
             request["destination_id"] = destination["id"]
         if callback:
             request["claude_return_to"] = callback
+            request["claude_return_alias"] = CLAUDE_ALIAS
+        if no_reply:
+            request["no_reply"] = True
         path = bridge.location("requests", request_id)
         conn.execute("INSERT INTO outbound VALUES (?, ?, ?, ?)", (request_id, stored_nonce, digest, now))
         # The queue and audit also carry a stable ID, so an ambiguous retry cannot deliver twice.
@@ -213,7 +218,9 @@ def notify_returns(bridge, config):
             if receiver.get("transport") != "claude" or alias not in sender["allow"]:
                 continue
             expected = bridge.destination_identity(receiver)
-            if original.get("claude_return_to") != expected:
+            if "claude_return_alias" not in original and original.get("claude_return_to") != expected:
+                continue
+            if not original.get("claude_return_to"):
                 continue
             result = bridge.verify(bridge.load(bridge.location("results", parent)), key)
             target = original["target"]

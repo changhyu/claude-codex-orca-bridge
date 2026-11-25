@@ -391,7 +391,7 @@ def process(path, config, envelope=None):
                                 or rid != cloud_inbox.return_id(vice_return, late=data.get("vice_late_reply") is True)):
                 publish(rid, client, target, "target_denied", key)
                 return
-            return_only = bool(vice_return or (data.get("completion_of")
+            return_only = bool(vice_return or data.get("no_reply") is True or (data.get("completion_of")
                                and data.get("destination_transport") == orca_reply_return.LOCAL_CODEX))
             return dispatch_desktop(rid, client, target, key, data["message"], data["created"], destination,
                                     cloud_ready, return_only, direct_notification=bool(data.get("delegation_return_of")),
@@ -406,7 +406,8 @@ def process(path, config, envelope=None):
     audit(rid, client, target, "sending")
     try:
         completion = bool(data.get("completion_of") or data.get("claude_return_of")
-                          or data.get("delegation_return_of") or data.get("paired_directory_of"))
+                          or data.get("delegation_return_of") or data.get("paired_directory_of")
+                          or data.get("no_reply") is True)
         transport = destination["transport"]
         if transport == "orca" and destination.get("host"):
             transport = "orca-remote"

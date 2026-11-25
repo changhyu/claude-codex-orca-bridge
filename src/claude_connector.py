@@ -54,6 +54,7 @@ TOOLS = [
             "type": "object", "properties": {
                 "target": {"type": "string"}, "message": {"type": "string"},
                 "nonce": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+                "no_reply": {"type": "boolean", "description": "Deliver as a one-way notification without waiting for a reply."},
             }, "required": ["target", "message"], "additionalProperties": False,
         },
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
@@ -106,13 +107,16 @@ def handle(bridge, bearer, raw):
                     raise ValueError("list_agents accepts no arguments.")
                 data = {"agents": directory(bridge)}
             elif params.get("name") == "send_to_agent":
-                if not {"target", "message"} <= set(args) <= {"target", "message", "nonce"}:
+                if not {"target", "message"} <= set(args) <= {"target", "message", "nonce", "no_reply"}:
                     raise ValueError("Invalid send_to_agent arguments.")
+                if type(args.get("no_reply", False)) is not bool:
+                    raise ValueError("no_reply must be a boolean.")
+                no_reply = args.get("no_reply", False)
                 text = args["message"]
                 forwarded = CONNECTOR_FORWARD.match(text) if isinstance(text, str) else None
                 if forwarded:
-                    if "nonce" in args:
-                        raise ValueError("Do not combine nonce with Bridge-Forward.")
+                    if "nonce" in args or no_reply:
+                        raise ValueError("Do not combine nonce or no_reply with Bridge-Forward.")
                     request_id = queue_claude_dispatch(
                         bridge, forwarded[1], forwarded[2],
                         {"target": args["target"], "message": normalize_message(text[forwarded.end():])},
@@ -122,7 +126,7 @@ def handle(bridge, bearer, raw):
                 else:
                     data = claude_peer.queue_message(
                         bridge, bearer, args.get("nonce", uuid.uuid4().hex),
-                        text, args["target"], roster=True,
+                        text, args["target"], roster=True, no_reply=no_reply,
                     )
             else:
                 raise ValueError("Unknown MCP tool.")

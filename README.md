@@ -48,7 +48,7 @@ BRIDGE_PROJECT_DIR=/path/to/your/project \
   python3 src/secure_bridge.py worker src/worker.json
 ```
 
-Add `src/agent_mesh_mcp.py` or `src/secure_mcp.py` to your MCP config (see [examples/mcp-config.example.json](examples/mcp-config.example.json)) to unlock `bridge_list`, `bridge_send`, `bridge_status`, `bridge_wait_for_reply`, and `bridge_receive_files`.
+Add `src/agent_mesh_mcp.py` or `src/secure_mcp.py` to your MCP config (see [examples/mcp-config.example.json](examples/mcp-config.example.json)) to unlock `bridge_list`, `bridge_send` (including `no_reply: true` for token-free one-way notifications), `bridge_status`, `bridge_wait_for_reply`, `bridge_receive_files`, and `bridge_manage` (`add_claude`, `rebind_claude`, `rename`, `sync_orca`).
 
 ---
 
@@ -183,7 +183,8 @@ ingress:
 
 [examples/mcp-config.example.json](examples/mcp-config.example.json)을 참고하여 에이전트의 MCP 설정에 추가하면 다음 도구들을 즉시 사용할 수 있습니다:
 - `bridge_list`: 전송 가능한 에이전트 별칭(alias) 및 전송 수단 목록 조회
-- `bridge_send`: 대상 에이전트에 메시지(및 선택적 `attachments`, `receive_files`, `reply_to`) 전송
+- `bridge_send`: 대상 에이전트에 메시지(및 선택적 `attachments`, `receive_files`, `reply_to`, 단방향 공지용 `no_reply`) 전송
+- `bridge_manage`: 로컬 대상 등록·동기화·세션 교체(`rebind_claude`)·표시 이름 변경(`rename`)
 - `bridge_status` / `bridge_wait_for_reply`: 전달·응답 상태 조회
 - `bridge_receive_files`: 원격 에이전트가 업로드한 결과 파일 회수
 

@@ -222,6 +222,121 @@ class BridgeSmokeTest(unittest.TestCase):
             )
             self.assertEqual(downloaded, content_bytes)
 
+    def test_no_reply_delivers_clean_notification_without_callback_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            os.environ["SECURE_BRIDGE_STATE"] = str(tmp_path / "state")
+
+            import importlib
+            import secure_bridge
+            import secure_mcp
+
+            importlib.reload(secure_bridge)
+            importlib.reload(secure_mcp)
+            secure_bridge.BASE = tmp_path
+            secure_bridge.ensure_state()
+
+            codex_key = secrets.token_hex(32)
+            session_id = "session_NoticeTarget123456789012"
+            worker_cfg = {
+                "https_origin": "https://bridge.example.com",
+                "clients": {
+                    "codex": {"key": codex_key, "allow": ["claude-peer"], "label": "Codex MCP"}
+                },
+                "targets": {
+                    "claude-peer": {"transport": "claude", "id": session_id}
+                },
+            }
+            client_cfg = {"id": "codex", "key": codex_key, "allow": ["claude-peer"], "label": "Codex MCP"}
+            worker_file = tmp_path / "worker.json"
+            worker_file.write_text(json.dumps(worker_cfg), encoding="utf-8")
+            os.chmod(worker_file, 0o600)
+
+            with self.assertRaises(ValueError):
+                secure_mcp.call(
+                    "bridge_send",
+                    {"target": "claude-peer", "message": "conflict", "no_reply": True, "reply_to": "orca-123"},
+                    client_cfg,
+                )
+
+            send_resp = secure_mcp.call(
+                "bridge_send",
+                {"target": "claude-peer", "message": "One-way routing update", "no_reply": True},
+                client_cfg,
+            )
+            rid = send_resp["request_id"]
+            req_path = secure_bridge.location("requests", rid)
+
+            captured = {}
+
+            def fake_run(cmd, *, input=None, **kwargs):
+                captured["prompt"] = input
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True, "session_id": session_id}), stderr="")
+
+            with patch("secure_bridge.subprocess.run", side_effect=fake_run):
+                secure_bridge.process(req_path, worker_cfg)
+
+            # Must not wrap with Bearer token envelope and must finalize as delivered
+            self.assertEqual(captured["prompt"], "One-way routing update")
+            self.assertNotIn("Bearer:", captured["prompt"])
+            status_resp = secure_mcp.call("bridge_status", {"request_id": rid}, client_cfg)
+            self.assertEqual(status_resp["state"], "delivered")
+            with secure_bridge.database("callback") as con:
+                row = con.execute("SELECT 1 FROM replies WHERE id=?", (rid,)).fetchone()
+            self.assertIsNone(row)
+
+    def test_orca_sync_preserves_display_name_and_admin_rebind_rename(self):
+        import bridge_admin
+        import register_orca_adapter
+
+        key = secrets.token_hex(32)
+        alias = "orca-aaaa1111-2222-3333-4444-555566667777"
+        handle = "term_aaaa1111-2222-3333-4444-555566667777"
+        worker = {
+            "https_origin": "https://bridge.example.com",
+            "clients": {"codex": {"key": key, "allow": [alias, "claude-peer"], "manage_destinations": True}},
+            "targets": {
+                alias: {
+                    "transport": "orca",
+                    "id": handle,
+                    "incarnation": "inc-old",
+                    "display_name": "Local Lead Agent",
+                    "project_live_orca": True,
+                },
+                "claude-peer": {
+                    "transport": "claude",
+                    "id": "session_OldPeerSession1234567890",
+                    "display_name": "Cloud Coordinator",
+                },
+            },
+            "claude_connector_roster_names": {"claude-peer": "Cloud Coordinator"},
+        }
+        client = {"id": "codex", "key": key, "allow": [alias, "claude-peer"]}
+        live_rows = [{
+            "handle": handle,
+            "incarnationId": "inc-new",
+            "executionHostId": "local",
+            "connected": True,
+            "writable": True,
+            "agentIdentity": "antigravity",
+        }]
+        updated, _ = register_orca_adapter.update(worker, client, live_rows, "sync", None)
+        self.assertEqual(updated[alias]["incarnation"], "inc-new")
+        self.assertEqual(updated[alias]["display_name"], "Local Lead Agent")
+        self.assertTrue(updated[alias]["project_live_orca"])
+
+        rebound = bridge_admin.changes(
+            worker, client, {"action": "rebind_claude", "alias": "claude-peer", "session_id": "session_NewPeerSession9876543210"}
+        )
+        self.assertEqual(rebound["id"], "session_NewPeerSession9876543210")
+        self.assertEqual(worker["targets"]["claude-peer"]["display_name"], "Cloud Coordinator")
+
+        renamed = bridge_admin.changes(
+            worker, client, {"action": "rename", "alias": "claude-peer", "display_name": "Cloud Coordinator v2"}
+        )
+        self.assertEqual(renamed["display_name"], "Cloud Coordinator v2")
+        self.assertEqual(worker["claude_connector_roster_names"]["claude-peer"], "Cloud Coordinator v2")
+
 
 if __name__ == "__main__":
     unittest.main()
