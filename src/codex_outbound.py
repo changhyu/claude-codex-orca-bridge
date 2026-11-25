@@ -118,7 +118,9 @@ def receive_commands(bridge, registry, ipc, read_frame, request, broadcast):
 
 
 def watch(bridge, ipc, read_frame, request, broadcast):
+    backoff = 4
     while True:
+        started = time.monotonic()
         try:
             config = bridge.secret_file(bridge.BASE / "worker.json")
             policy = config["clients"][LOCAL_CLIENT]
@@ -126,9 +128,12 @@ def watch(bridge, ipc, read_frame, request, broadcast):
                         if alias in policy["allow"] and eligible(row)}
             if registry:
                 receive_commands(bridge, registry, ipc, read_frame, request, broadcast)
+                backoff = 4
+            else:
+                backoff = 30
         except (OSError, RuntimeError, ValueError, TypeError, KeyError):
-            pass
-        time.sleep(4)
+            backoff = 4 if time.monotonic() - started >= 30 else min(60, backoff * 2)
+        time.sleep(backoff)
 
 
 def notify(bridge, config):

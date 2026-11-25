@@ -337,6 +337,27 @@ class BridgeSmokeTest(unittest.TestCase):
         self.assertEqual(renamed["display_name"], "Cloud Coordinator v2")
         self.assertEqual(worker["claude_connector_roster_names"]["claude-peer"], "Cloud Coordinator v2")
 
+    def test_codex_discovery_handles_refused_ipc_without_crash_or_log_spam(self):
+        import io
+        from contextlib import contextmanager, redirect_stdout
+        import codex_cloud_discovery as discovery
+
+        @contextmanager
+        def refused_ipc(_timeout):
+            raise ConnectionRefusedError(61, "Connection refused")
+            yield  # pragma: no cover
+
+        sleeps = []
+        buf = io.StringIO()
+        with patch.object(discovery, "ipc", refused_ipc), redirect_stdout(buf):
+            discovery.watch(set(), max_cycles=4, sleep_fn=sleeps.append)
+
+        # Exponential backoff (5 -> 10 -> 20 -> 40) and single-line transition notice (no crash, no repeated spam)
+        self.assertEqual(sleeps, [5, 10, 20, 40])
+        lines = [line for line in buf.getvalue().splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1)
+        self.assertIn("ConnectionRefusedError", lines[0])
+
 
 if __name__ == "__main__":
     unittest.main()

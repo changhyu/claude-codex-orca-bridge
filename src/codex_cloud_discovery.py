@@ -348,13 +348,7 @@ def scan_candidates(seed):
             inspect_candidate(thread, host=host)
 
 
-def watch(seed):
-    import codex_outbound
-
-    Thread(target=codex_outbound.watch, args=(bridge, ipc, read_frame, request, broadcast),
-           name="codex-outbound", daemon=True).start()
-    recently_seen = {}
-    next_scan = 0
+def watch_once(seed, recently_seen, next_scan):
     with ipc(8) as (conn, _):
         conn.settimeout(8)
         while True:
@@ -362,8 +356,8 @@ def watch(seed):
             if now >= next_scan:
                 try:
                     discover_local_history()
-                except (OSError, ValueError, sqlite3.Error) as error:
-                    print(f"Local Codex discovery unavailable: {type(error).__name__}", flush=True)
+                except (OSError, ValueError, sqlite3.Error):
+                    pass
                 scan_candidates(seed)
                 next_scan = time.monotonic() + SCAN_INTERVAL
             if not select([conn], [], [], max(0, next_scan - time.monotonic()))[0]:
@@ -376,13 +370,41 @@ def watch(seed):
             now = time.monotonic()
             if archived is None and now - recently_seen.get(identity, -60) < 10:
                 continue
-            recently_seen = {key: stamp for key, stamp in recently_seen.items() if now - stamp < 600}
+            recently_seen.clear()
             recently_seen[identity] = now
             if archived is None:
                 config = bridge.secret_file(bridge.BASE / "worker.json")
                 if allowed_alias(config, thread, host):
                     continue
             inspect_candidate(thread, archived, host)
+
+
+def watch(seed, *, max_cycles=None, sleep_fn=time.sleep):
+    import codex_outbound
+
+    if max_cycles is None:
+        Thread(target=codex_outbound.watch, args=(bridge, ipc, read_frame, request, broadcast),
+               name="codex-outbound", daemon=True).start()
+    recently_seen = {}
+    backoff = 5
+    cycles = 0
+    offline_logged = False
+    while max_cycles is None or cycles < max_cycles:
+        cycles += 1
+        started = time.monotonic()
+        try:
+            watch_once(seed, recently_seen, 0)
+            backoff = 5
+            offline_logged = False
+        except (DesktopUnavailable, OSError, ValueError, KeyError, TypeError) as error:
+            if time.monotonic() - started >= 30:
+                backoff = 5
+                offline_logged = False
+            if not offline_logged:
+                print(f"Codex IPC idle/disconnected ({type(error).__name__}); backing off quietly.", flush=True)
+                offline_logged = True
+            sleep_fn(backoff)
+            backoff = min(60, backoff * 2)
 
 
 if __name__ == "__main__":
